@@ -1,0 +1,15 @@
+﻿data_vencimento_utc,data_publicacao_utc,vida_contrato_dias,dias_restantes_ate_vencer,periodo_liquidacao,tipos_disponiveis,total_instrumentos,instrumento_referencia
+2026-10-24 08:00:00 UTC,2026-10-20 08:00:11 UTC,4.0,-1.0,day,future/option,63,BTC-24OCT26
+2026-10-25 08:00:00 UTC,2026-10-21 08:00:11 UTC,4.0,0.0,day,future/option,61,BTC-25OCT26
+2026-10-26 08:00:00 UTC,2026-10-22 08:00:11 UTC,4.0,1.0,day,future/option,57,BTC-26OCT26
+2026-10-27 08:00:00 UTC,2026-10-23 08:00:11 UTC,4.0,2.0,day,future/option,55,BTC-27OCT26
+2026-10-28 08:00:00 UTC,2026-10-24 08:00:10 UTC,4.0,3.0,day,future/option,55,BTC-28OCT26
+2026-10-30 08:00:00 UTC,2026-07-30 08:00:13 UTC,92.0,5.0,month,future/option,113,BTC-30OCT26
+2026-11-06 08:00:00 UTC,2026-10-15 08:00:11 UTC,22.0,12.0,week,future/option,45,BTC-6NOV26
+2026-11-13 08:00:00 UTC,2026-10-22 08:00:11 UTC,22.0,19.0,week,future/option,35,BTC-13NOV26
+2026-11-27 08:00:00 UTC,2026-08-27 08:00:24 UTC,92.0,33.0,month,future/option,97,BTC-27NOV26
+2026-12-25 08:00:00 UTC,2025-12-25 08:00:15 UTC,365.0,61.0,month,future/option,119,BTC-25DEC26
+2027-03-26 08:00:00 UTC,2026-03-26 08:00:27 UTC,365.0,152.0,month,future/option,105,BTC-26MAR27
+2027-06-25 08:00:00 UTC,2026-06-25 08:00:14 UTC,365.0,243.0,month,future/option,109,BTC-25JUN27
+2027-09-24 08:00:00 UTC,2026-09-24 08:00:23 UTC,365.0,334.0,month,future/option,87,BTC-24SEP27
+PERPETUO (Sem vencimento),2018-08-14 10:24:47 UTC,PERPETUO,N/A,perpetual,future,1,BTC-PERPETUAL
