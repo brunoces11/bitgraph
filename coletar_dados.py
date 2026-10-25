@@ -8,18 +8,24 @@ Este script realiza duas tarefas principais utilizando endpoints públicos (sem 
    - 2018 a atual: Deribit (BTC-PERPETUAL)
    - Também salva um arquivo dedicado exclusivamente ao histórico da Deribit.
 2. Mapeamento das datas de vencimento e datas de publicação (criação) de contratos da Deribit (Futuros e Opções).
+3. Volume BTC/USD, RVOL, fluxo por agressor, delta/CVD e snapshots de Open Interest.
 
 Desenvolvido para execução com a biblioteca padrão do Python (sem dependências externas).
 """
 
+import argparse
 import csv
 from datetime import datetime, timezone
 import json
 import os
-import sys
 import time
 import urllib.error
 import urllib.request
+
+from volume_deribit import (
+    DAY_MS, PRICE_FIELDS, atomic_csv, carregar_velas, coletar_fluxo,
+    coletar_open_interest, date_ms, enriquecer_precos,
+)
 
 # Constantes e caminhos
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -37,7 +43,14 @@ def fetch_json(url, retries=3, delay=2):
     for attempt in range(1, retries + 1):
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                payload = json.loads(resp.read().decode("utf-8"))
+                if isinstance(payload, dict) and "error" in payload:
+                    error = payload["error"]
+                    if error.get("code") == 10028 and attempt < retries:
+                        time.sleep(delay * attempt)
+                        continue
+                    raise RuntimeError(f"Erro da API em {url}: {error}")
+                return payload
         except (urllib.error.URLError, TimeoutError) as e:
             if attempt == retries:
                 raise RuntimeError(
@@ -90,8 +103,14 @@ def coletar_historico_deribit(start_ms, end_ms):
     volumes = data.get("volume", [])
     costs = data.get("cost", [])
 
+    if any(len(values) != len(ticks) for values in (opens, highs, lows, closes, volumes, costs)):
+        raise RuntimeError("Arrays de candles Deribit com comprimentos diferentes")
+
     velas = []
     for i in range(len(ticks)):
+        # O endpoint pode incluir o candle anterior ao início solicitado.
+        if not start_ms <= ticks[i] <= end_ms:
+            continue
         velas.append(
             {
                 "timestamp_ms": ticks[i],
@@ -108,9 +127,10 @@ def coletar_historico_deribit(start_ms, end_ms):
             }
         )
 
-    print(
-        f"   [Deribit] {len(velas)} velas diárias obtidas (de {velas[0]['datetime']} a {velas[-1]['datetime']})."
-    )
+    if velas:
+        print(
+            f"   [Deribit] {len(velas)} velas diárias obtidas (de {velas[0]['datetime']} a {velas[-1]['datetime']})."
+        )
     return velas
 
 
@@ -155,58 +175,26 @@ def coletar_historico_bitfinex(start_ms, end_ms):
     return velas
 
 
-def salvar_precos(velas_deribit, velas_completas):
-    """Salva os arquivos CSV de preço."""
-    # 1. Arquivo somente Deribit
+def salvar_precos(velas_deribit, velas_completas, fluxos=None):
+    """Preserva colunas originais e adiciona métricas com unidades explícitas."""
+    fluxos = fluxos or {}
+    now_ms = int(time.time() * 1000)
     path_deribit = os.path.join(OUTPUT_DIR, "btc_ohlc_deribit_puro.csv")
-    with open(path_deribit, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            ["datetime", "open", "high", "low", "close", "volume", "cost_btc"]
-        )
-        for v in velas_deribit:
-            writer.writerow(
-                [
-                    v["datetime"],
-                    v["open"],
-                    v["high"],
-                    v["low"],
-                    v["close"],
-                    v["volume"],
-                    v["cost"],
-                ]
-            )
+    rows = enriquecer_precos(velas_deribit, fluxos, now_ms)
+    for row in rows:
+        # Compatibilidade: cost_btc é um nome legado incorreto; seus valores são USD.
+        row["cost_btc"] = row["cost"]
+    atomic_csv(path_deribit,
+               ["datetime", "open", "high", "low", "close", "volume", "cost_btc"] + PRICE_FIELDS,
+               rows)
     print(f"-> Salvo: {path_deribit} ({len(velas_deribit)} registros)")
-
-    # 2. Arquivo 10 anos completos
     path_10y = os.path.join(OUTPUT_DIR, "btc_ohlc_10_anos.csv")
-    with open(path_10y, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "datetime",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "cost_volume",
-                "source",
-            ]
-        )
-        for v in velas_completas:
-            writer.writerow(
-                [
-                    v["datetime"],
-                    v["open"],
-                    v["high"],
-                    v["low"],
-                    v["close"],
-                    v["volume"],
-                    v["cost"],
-                    v["source"],
-                ]
-            )
+    rows = enriquecer_precos(velas_completas, fluxos, now_ms)
+    for row in rows:
+        row["cost_volume"] = row["cost"]
+    atomic_csv(path_10y,
+               ["datetime", "open", "high", "low", "close", "volume", "cost_volume", "source"] + PRICE_FIELDS,
+               rows)
     print(f"-> Salvo: {path_10y} ({len(velas_completas)} registros)")
 
 
@@ -414,6 +402,26 @@ def processar_e_salvar_vencimentos(contratos):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--somente-volume", action="store_true",
+                        help="Atualiza candles recentes e volume usando os CSVs existentes; não coleta contratos")
+    parser.add_argument("--dias-fluxo", type=int, default=2,
+                        help="Número de sessões diárias fechadas para coletar fluxo (padrão: 2)")
+    parser.add_argument("--inicio-fluxo", help="Primeira sessão histórica de fluxo (YYYY-MM-DD, abertura às 08 UTC)")
+    parser.add_argument("--fim-fluxo", help="Última sessão histórica de fluxo, inclusive (YYYY-MM-DD)")
+    args = parser.parse_args()
+    if args.dias_fluxo < 1:
+        parser.error("--dias-fluxo precisa ser maior que zero")
+    if args.fim_fluxo and not args.inicio_fluxo:
+        parser.error("--fim-fluxo exige --inicio-fluxo")
+    try:
+        for value in (args.inicio_fluxo, args.fim_fluxo):
+            if value:
+                date_ms(value)
+        if args.fim_fluxo and args.fim_fluxo < args.inicio_fluxo:
+            parser.error("--fim-fluxo precisa ser igual ou posterior a --inicio-fluxo")
+    except ValueError:
+        parser.error("Datas precisam estar no formato YYYY-MM-DD")
     print("=" * 70)
     print("COLETOR DE DADOS DE MERCADO - BITCOIN & DERIBIT")
     print("=" * 70)
@@ -422,8 +430,22 @@ def main():
     # 10 anos atrás (~3.652 dias)
     ten_years_ago_ms = now_ms - (10 * 365 * 24 * 3600 * 1000)
 
-    # 1. Coletar velas Deribit
-    velas_deribit = coletar_historico_deribit(ten_years_ago_ms, now_ms)
+    if args.somente_volume:
+        velas_deribit = carregar_velas(os.path.join(OUTPUT_DIR, "btc_ohlc_deribit_puro.csv"), True)
+        velas_10y = carregar_velas(os.path.join(OUTPUT_DIR, "btc_ohlc_10_anos.csv"))
+        # Reconsulta sessões recentes, inclusive a última que antes estava aberta.
+        start_ms = min(velas_deribit[-1]["timestamp_ms"] - DAY_MS, now_ms - 3 * DAY_MS)
+        recentes = coletar_historico_deribit(start_ms, now_ms)
+        if not recentes:
+            raise RuntimeError("Sem candles recentes; atualização cancelada")
+        for target in (velas_deribit, velas_10y):
+            merged = {c["timestamp_ms"]: c for c in target}
+            merged.update({c["timestamp_ms"]: c for c in recentes})
+            target[:] = [merged[key] for key in sorted(merged)]
+    else:
+        velas_deribit = coletar_historico_deribit(ten_years_ago_ms, now_ms)
+        if not velas_deribit:
+            raise RuntimeError("Nenhum candle Deribit disponível")
 
     # Data de início da Deribit obtida
     first_deribit_ms = (
@@ -433,17 +455,24 @@ def main():
     )
 
     # 2. Coletar velas Bitfinex para completar os 10 anos (de 10 anos atrás até o início da Deribit)
-    velas_bitfinex = coletar_historico_bitfinex(
-        ten_years_ago_ms, first_deribit_ms - 86400000
-    )
+    if not args.somente_volume:
+        velas_bitfinex = coletar_historico_bitfinex(
+            ten_years_ago_ms, first_deribit_ms - 86400000
+        )
+        velas_10y = velas_bitfinex + velas_deribit
 
-    # Unir séries históricas
-    velas_10y = velas_bitfinex + velas_deribit
-    salvar_precos(velas_deribit, velas_10y)
+    # OI é um snapshot do instante da consulta, nunca retropreenchido nos candles.
+    coletar_open_interest(fetch_json, OUTPUT_DIR)
+    fluxos = coletar_fluxo(
+        velas_deribit, fetch_json, OUTPUT_DIR, days=args.dias_fluxo,
+        start_date=args.inicio_fluxo, end_date=args.fim_fluxo,
+    )
+    salvar_precos(velas_deribit, velas_10y, fluxos)
 
     # 3. Coletar instrumentos e datas de vencimento / publicação
-    contratos = coletar_instrumentos_deribit()
-    processar_e_salvar_vencimentos(contratos)
+    if not args.somente_volume:
+        contratos = coletar_instrumentos_deribit()
+        processar_e_salvar_vencimentos(contratos)
 
     print("\n" + "=" * 70)
     print("CONCLUÍDO COM SUCESSO!")

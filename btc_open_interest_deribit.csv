@@ -1,0 +1,3 @@
+﻿timestamp_ms,datetime_utc,instrument_name,open_interest_usd,open_interest_change_usd,open_interest_change_pct,seconds_since_previous,volume_24h_btc,volume_24h_usd
+1792944957087,2026-10-25T16:15:57.087+00:00,BTC-PERPETUAL,841879390,,,,8532.40649209,685909900.0
+1792945437502,2026-10-25T16:23:57.502+00:00,BTC-PERPETUAL,841821830,-57560,-0.0068370838725485369109701100,480.415,8494.3755398,682921130.0
